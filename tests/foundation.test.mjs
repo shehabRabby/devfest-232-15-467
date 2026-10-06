@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import ts from "typescript";
-import { PDFDocument } from "pdf-lib";
+import { PDFArray, PDFDocument, PDFRawStream, decodePDFRawStream, degrees } from "pdf-lib";
 
 // Execute the actual TypeScript helpers without adding a separate test framework.
 const loadModule = createRequire(import.meta.url);
@@ -25,6 +25,7 @@ const { formatValidationError, translations } = loadModule("../lib/i18n.ts");
 const { sha256 } = loadModule("../lib/hash.ts");
 const { loadPdfFile, uploadPdfFiles, MAX_PDF_FILES, MAX_TOTAL_BYTES } = loadModule("../lib/pdf.ts");
 const { initialWorkspace, workspaceReducer } = loadModule("../lib/workspace.ts");
+const { generatePackagePdf, getIncludedDocuments, getPackageFilename, formatPackageFooter, formatPackageMadeDate, getFooterSafePageBox, PACKAGE_FOOTER_HEIGHT } = loadModule("../lib/package-pdf.ts");
 
 const requirement = { id: "req", order: 1, title_en: "Test document", title_bn: "পরীক্ষার নথি", mandatory: true, has_expiry: true };
 const tender = { tender_id: "test", title: "Test tender", procuring_entity: "Test entity", bidder: "Test bidder", submission_deadline: "2026-10-20" };
@@ -208,6 +209,143 @@ async function makePdf(name = "valid.pdf", pages = 2) {
   for (let page = 0; page < pages; page++) document.addPage();
   return new File([await document.save()], name, { type: "application/pdf" });
 }
+
+function pdfPageText(page) {
+  const contents = page.node.Contents();
+  const streams = contents instanceof PDFArray
+    ? Array.from({ length: contents.size() }, (_, index) => contents.lookup(index, PDFRawStream))
+    : contents ? [contents] : [];
+  const decoded = streams.map((stream) => new TextDecoder().decode(decodePDFRawStream(stream).decode())).join("\n");
+  return [...decoded.matchAll(/<([0-9a-f]+)>\s*Tj/gi)].map((match) => Buffer.from(match[1], "hex").toString("latin1")).join("\n");
+}
+
+async function markedPdf(name, sizes) {
+  const document = await PDFDocument.create();
+  for (const [index, size] of sizes.entries()) {
+    const page = document.addPage([size.width, size.height]);
+    page.setMediaBox(size.x ?? 0, size.y ?? 0, size.width, size.height);
+    page.setCropBox(size.x ?? 0, size.y ?? 0, size.width, size.height);
+    page.setRotation(degrees(size.rotation ?? 0));
+    page.drawText(`Original ${name} page ${index + 1}`, { x: (size.x ?? 0) + 15, y: (size.y ?? 0) + 25, size: 10 });
+  }
+  return loadPdfFile(new File([await document.save()], name, { type: "application/pdf" }));
+}
+
+test("package inclusion sorts numerically, includes matched optional documents, and ignores all unmatched files", () => {
+  const early = { ...requirement, id: "early", order: 2 };
+  const late = { ...requirement, id: "late", order: 10 };
+  const skipped = { ...requirement, id: "skipped", order: 3, mandatory: false };
+  const includedOptional = { ...requirement, id: "included-optional", order: 11, mandatory: false };
+  const spare = { ...otherPdf, id: "spare", name: "file with spaces.pdf" };
+  const data = { tender, requirements: [late, skipped, includedOptional, early] };
+  const matches = { late: otherPdf.id, early: pdf.id, "included-optional": spare.id };
+  const included = getIncludedDocuments(data, [pdf, otherPdf, spare, duplicate], matches);
+  assert.deepEqual(included.map((item) => item.requirement.id), ["early", "late", "included-optional"]);
+  assert.equal(included[2].file.name, "file with spaces.pdf");
+  assert.deepEqual(data.requirements.map((item) => item.id), ["late", "skipped", "included-optional", "early"]);
+});
+
+test("package filenames, footer totals, and creation date follow the required format", () => {
+  assert.equal(getPackageFilename("T-2026-0417"), "T-2026-0417_Package.pdf");
+  assert.equal(formatPackageFooter("Tender", 1, 12), "Tender | Page 1 of 12");
+  assert.equal(formatPackageFooter("Tender", 12, 12), "Tender | Page 12 of 12");
+  assert.throws(() => formatPackageFooter("Tender", 0, 12), RangeError);
+  assert.throws(() => formatPackageFooter("Tender", 13, 12), RangeError);
+  assert.equal(formatPackageMadeDate(new Date("2026-10-06T20:30:00Z")), "2026-10-07");
+});
+
+test("generated PDF has one English cover, ordered full source pages, and the correct footer on every page", async () => {
+  const first = await markedPdf("first file.pdf", [{ width: 600, height: 800 }, { width: 400, height: 600 }]);
+  const last = await markedPdf("landscape.pdf", [{ width: 842, height: 595 }]);
+  const optional = await markedPdf("optional.pdf", [{ width: 612, height: 792 }]);
+  const unmatched = await markedPdf("unmatched.pdf", [{ width: 612, height: 792 }]);
+  const earlyRequirement = { ...requirement, id: "early", order: 2, title_en: "First document", has_expiry: false };
+  const lateRequirement = { ...earlyRequirement, id: "late", order: 10, title_en: "Last document" };
+  const skippedRequirement = { ...earlyRequirement, id: "skip", order: 5, title_en: "Skipped optional document", mandatory: false };
+  const optionalRequirement = { ...earlyRequirement, id: "optional", order: 11, title_en: "Included optional document", mandatory: false };
+  const data = { tender, requirements: [lateRequirement, skippedRequirement, optionalRequirement, earlyRequirement] };
+  const progress = [];
+  const result = await generatePackagePdf(data, [unmatched, first, last, optional], { early: first.id, late: last.id, optional: optional.id }, {}, (value) => progress.push(value), new Date("2026-10-06T09:00:00Z"));
+  const output = await PDFDocument.load(result.bytes);
+  assert.equal(result.filename, "test_Package.pdf");
+  assert.equal(result.pageCount, 5);
+  assert.equal(output.getPageCount(), 5);
+  const text = output.getPages().map(pdfPageText);
+  for (const [index, content] of text.entries()) assert.ok(content.includes(`test | Page ${index + 1} of 5`));
+  for (const value of ["Tender Document Package", "Tender ID", tender.title, tender.procuring_entity, tender.bidder, tender.submission_deadline, "Date package was made", "2026-10-06"]) assert.ok(text[0].includes(value), value);
+  assert.ok(text[0].indexOf("1. First document") < text[0].indexOf("2. Last document"));
+  assert.ok(text[0].indexOf("2. Last document") < text[0].indexOf("3. Included optional document"));
+  assert.ok(!text[0].includes("Skipped optional document"));
+  assert.ok(text[1].includes("Original first file.pdf page 1"));
+  assert.ok(text[2].includes("Original first file.pdf page 2"));
+  assert.ok(text[3].includes("Original landscape.pdf page 1"));
+  assert.ok(text[4].includes("Original optional.pdf page 1"));
+  assert.ok(!text.join("\n").includes("Original unmatched.pdf"));
+  assert.deepEqual(output.getPage(3).getMediaBox(), { x: 0, y: -PACKAGE_FOOTER_HEIGHT, width: 842, height: 595 + PACKAGE_FOOTER_HEIGHT });
+  assert.deepEqual(progress.at(-1), { stage: "saving", completed: 5, total: 5 });
+});
+
+test("footer-safe copies preserve portrait/landscape rotations and nonzero page origins without scaling or cropping", async () => {
+  const source = await markedPdf("rotated.pdf", [0, 90, 180, 270].map((rotation) => ({ x: 10, y: 20, width: 300, height: 500, rotation })));
+  const data = { tender, requirements: [{ ...requirement, has_expiry: false }] };
+  const result = await generatePackagePdf(data, [source], { req: source.id }, {});
+  const output = await PDFDocument.load(result.bytes);
+  assert.equal(output.getPageCount(), 5);
+  const expected = [
+    { x: 10, y: -20, width: 300, height: 540 },
+    { x: 10, y: 20, width: 340, height: 500 },
+    { x: 10, y: 20, width: 300, height: 540 },
+    { x: -30, y: 20, width: 340, height: 500 },
+  ];
+  for (const [index, rotation] of [0, 90, 180, 270].entries()) {
+    const page = output.getPage(index + 1);
+    assert.equal(page.getRotation().angle, rotation);
+    assert.deepEqual(page.getMediaBox(), expected[index]);
+    assert.deepEqual(page.getCropBox(), expected[index]);
+    assert.ok(pdfPageText(page).includes(`Original rotated.pdf page ${index + 1}`));
+    assert.ok(pdfPageText(page).includes(`test | Page ${index + 2} of 5`));
+  }
+  assert.deepEqual(getFooterSafePageBox({ x: 0, y: 0, width: 60, height: 100 }, 0, 200), { x: -70, y: -40, width: 200, height: 140 });
+});
+
+test("generation counts actual source pages and allows a cover-only package for unmatched optional requirements", async () => {
+  const source = await markedPdf("actual-pages.pdf", [{ width: 300, height: 500 }, { width: 300, height: 500 }]);
+  const result = await generatePackagePdf({ tender, requirements: [{ ...requirement, has_expiry: false }] }, [{ ...source, pageCount: 999 }], { req: source.id }, {});
+  assert.equal(result.pageCount, 3);
+  const optionalOnly = { tender, requirements: [{ ...requirement, mandatory: false }] };
+  const coverOnly = await generatePackagePdf(optionalOnly, [], {}, {});
+  assert.equal((await PDFDocument.load(coverOnly.bytes)).getPageCount(), 1);
+});
+
+test("generation rejects blocked or duplicate assignments, unreadable files, and unsupported cover text safely", async () => {
+  const data = { tender, requirements: [requirement] };
+  await assert.rejects(generatePackagePdf(data, [], {}, {}), (error) => error.code === "NOT_READY");
+  await assert.rejects(generatePackagePdf(data, [pdf], { req: pdf.id }, { req: "2026-10-19" }), (error) => error.code === "NOT_READY");
+  await assert.rejects(generatePackagePdf({ tender, requirements: [requirement, otherRequirement] }, [pdf, duplicate], { req: pdf.id, other: duplicate.id }, { req: deadline, other: deadline }), (error) => error.code === "NOT_READY");
+  await assert.rejects(generatePackagePdf(data, [pdf], { req: pdf.id }, { req: deadline }), (error) => error.code === "INVALID_DOCUMENT" && error.filename === pdf.name);
+  const source = await markedPdf("valid.pdf", [{ width: 300, height: 500 }]);
+  await assert.rejects(generatePackagePdf({ tender: { ...tender, title: "বাংলা শিরোনাম" }, requirements: [{ ...requirement, has_expiry: false }] }, [source], { req: source.id }, {}), (error) => error.code === "UNSUPPORTED_TEXT");
+});
+
+test("many matched documents and long cover fields stay on one complete cover", async () => {
+  const files = [];
+  const requirements = [];
+  const matches = {};
+  for (let index = 1; index <= 30; index++) {
+    const file = await markedPdf(`document ${index}.pdf`, [{ width: 300, height: 500 }]);
+    const id = `item-${index}`;
+    files.push(file);
+    requirements.unshift({ ...requirement, id, order: index, title_en: `Document ${index} with a longer English title describing its supporting evidence`, has_expiry: false });
+    matches[id] = file.id;
+  }
+  const result = await generatePackagePdf({ tender: { ...tender, title: "A detailed tender title ".repeat(10) }, requirements }, files, matches, {});
+  const output = await PDFDocument.load(result.bytes);
+  assert.equal(output.getPageCount(), 31);
+  const coverText = pdfPageText(output.getPage(0));
+  assert.ok(coverText.includes("1. Document 1"));
+  assert.ok(coverText.includes("30. Document 30"));
+  assert.ok(coverText.includes("test | Page 1 of 31"));
+});
 
 test("real PDF loading retains original bytes, computes pages and filename-independent SHA-256", async () => {
   const original = await makePdf();

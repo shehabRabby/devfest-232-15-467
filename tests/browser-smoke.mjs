@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import next from "next";
+import { PDFArray, PDFDocument, PDFRawStream, decodePDFRawStream } from "pdf-lib";
 
 // Run explicitly after npm run build; uses the installed Chrome, with no screenshots.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -74,6 +75,13 @@ async function contains(text) {
   return evaluate(`document.body.innerText.includes(${JSON.stringify(text)})`);
 }
 
+function pageText(page) {
+  const contents = page.node.Contents();
+  const streams = contents instanceof PDFArray ? Array.from({ length: contents.size() }, (_, index) => contents.lookup(index, PDFRawStream)) : contents ? [contents] : [];
+  const decoded = streams.map((stream) => new TextDecoder().decode(decodePDFRawStream(stream).decode())).join("\n");
+  return [...decoded.matchAll(/<([0-9a-f]+)>\s*Tj/gi)].map((match) => Buffer.from(match[1], "hex").toString("latin1")).join("\n");
+}
+
 async function runSmoke() {
 try {
   await app.prepare();
@@ -108,6 +116,9 @@ try {
   await command("Runtime.enable");
   await command("Page.enable");
   await command("Network.enable");
+  const downloads = join(temporary, "downloads");
+  mkdirSync(downloads);
+  await command("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads });
   await command("Page.navigate", { url: origin });
   await waitFor(() => contains("Your checklist starts here"), "initial empty state");
   assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
@@ -191,8 +202,6 @@ try {
   await evaluate("document.querySelector('[aria-label=\"Remove match: Optional expiring document\"]').click()");
   await waitFor(() => evaluate("!document.querySelector('#generate-package').disabled"), "unmatched optional expiry document is non-blocking");
   assert.equal(await evaluate("document.querySelectorAll('input[type=date]').length"), 1);
-  await evaluate("document.querySelector('#generate-package').click()");
-  await waitFor(() => contains("Your document checks are complete"), "readiness-only generation placeholder");
 
   for (const language of ["en", "bn"]) {
     await evaluate(`document.querySelector('button[lang="${language}"]').click()`);
@@ -202,6 +211,37 @@ try {
       assert.equal(await contains("সব আবশ্যক নথি প্রস্তুত"), true);
       assert.equal(await evaluate("document.querySelector('#readiness-ok').textContent"), "২");
       assert.equal(await contains("Test bidder"), true, "tender-provided names remain unchanged");
+      await evaluate(`(() => {
+        window.__tenderObjectUrls = { created: [], revoked: [] };
+        const create = URL.createObjectURL.bind(URL);
+        const revoke = URL.revokeObjectURL.bind(URL);
+        URL.createObjectURL = blob => { const url = create(blob); window.__tenderObjectUrls.created.push(url); return url; };
+        URL.revokeObjectURL = url => { window.__tenderObjectUrls.revoked.push(url); revoke(url); };
+      })()`);
+      const loadingVisible = await evaluate(`(async () => {
+        const button = document.querySelector('#generate-package');
+        button.click();
+        await new Promise(done => setTimeout(done, 0));
+        return button.disabled && button.getAttribute('aria-busy') === 'true';
+      })()`);
+      assert.equal(loadingVisible, true, "generation loading state disables repeat clicks");
+      const downloaded = join(downloads, "UNSEEN-TEST_Package.pdf");
+      await waitFor(() => existsSync(downloaded), "PDF downloaded with the exact filename");
+      await waitFor(() => contains("ডাউনলোড শুরু হয়েছে"), "translated generation success");
+      const output = await PDFDocument.load(readFileSync(downloaded));
+      const trade = await PDFDocument.load(readFileSync(join(root, "documents", "trade_license_2026.pdf")));
+      const experience = await PDFDocument.load(readFileSync(join(root, "documents", "experience_cert.pdf")));
+      const total = 1 + trade.getPageCount() + experience.getPageCount();
+      assert.equal(output.getPageCount(), total);
+      const cover = pageText(output.getPage(0));
+      assert.ok(cover.includes("Tender Document Package"), "cover remains English in Bangla UI");
+      assert.ok(cover.includes("1. Expiring document"));
+      assert.ok(cover.includes("2. Required document"));
+      assert.ok(!cover.includes("3. Optional document"));
+      assert.ok(cover.includes("Test bidder"));
+      for (const [index, page] of output.getPages().entries()) assert.ok(pageText(page).includes(`UNSEEN-TEST | Page ${index + 1} of ${total}`));
+      await waitFor(() => evaluate("window.__tenderObjectUrls.created.length === 1 && window.__tenderObjectUrls.revoked.length === 1"), "download object URL released");
+      assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), false, "generation can be repeated after success");
     }
     for (const width of [320, 375, 1280]) {
       await command("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: false });
@@ -212,6 +252,30 @@ try {
   await evaluate("document.querySelector('button[lang=en]').click()");
   await waitFor(() => contains("All required documents are ready"), "English restored");
 
+  const badCover = JSON.parse(readFileSync(json, "utf8"));
+  badCover.tender.tender_id = "UNSUPPORTED-COVER";
+  badCover.tender.title = "বাংলা শিরোনাম";
+  const badCoverPath = join(temporary, "unsupported-cover.json");
+  writeFileSync(badCoverPath, JSON.stringify(badCover));
+  await upload("#json-upload", [badCoverPath]);
+  await waitFor(() => contains("UNSUPPORTED-COVER"), "new tender for generation failure");
+  await choose("#requirement-0", "trade_license_2026.pdf");
+  await date("2026-10-20");
+  await choose("#requirement-1", "experience_cert.pdf");
+  await waitFor(() => evaluate("!document.querySelector('#generate-package').disabled"), "failure fixture ready");
+  await evaluate("document.querySelector('#generate-package').click()");
+  await waitFor(() => contains("Could not create or download the package"), "friendly generation error");
+  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), false, "generation failure releases loading state");
+  await evaluate("document.querySelector('button[lang=bn]').click()");
+  await waitFor(() => contains("প্রচ্ছদের জন্য"), "generation failure translated");
+  await evaluate("document.querySelector('button[lang=en]').click()");
+  await upload("#json-upload", [json]);
+  await waitFor(() => contains("UNSEEN-TEST"), "restore valid tender after generation error");
+  await choose("#requirement-0", "trade_license_2026.pdf");
+  await date("2026-10-20");
+  await choose("#requirement-1", "experience_cert.pdf");
+  await waitFor(() => contains("All required documents are ready"), "workflow recovers after generation error");
+
   await evaluate("document.querySelector('[aria-label=\"Remove: trade_license_2026.pdf\"]').click()");
   await waitFor(async () => !(await evaluate("Boolean(document.querySelector('input[type=date]'))")), "removal clears assignment and expiry input");
   assert.equal(await contains("Missing"), true);
@@ -219,7 +283,7 @@ try {
   await evaluate("document.querySelector('[aria-label=\"Remove: experience_cert (1).pdf\"]').click()");
   await waitFor(async () => (await evaluate("[...document.querySelectorAll('span')].filter(item => item.textContent === 'Duplicate').length")) === 0, "duplicate indicator clears");
   assert.deepEqual(exceptions, [], "browser runtime errors");
-  assert.equal(requests.every((url) => url.startsWith(origin) || url.startsWith("data:")), true, "document workflow sent an external request");
+  assert.equal(requests.every((url) => url.startsWith(origin) || url.startsWith("data:") || url.startsWith(`blob:${origin}/`)), true, "document workflow sent an external request");
 } finally {
   const browserExited = browser && browser.exitCode === null ? once(browser, "exit").then(() => true) : Promise.resolve(true);
   if (socket?.readyState === WebSocket.OPEN) {
@@ -242,7 +306,7 @@ try {
 }
 
 await runSmoke().then(() => {
-  console.log("Browser smoke passed: Stage 1 uploads plus matching, unmatching, reassignment, duplicate restrictions, expiry boundaries, readiness button/counts, bilingual validation, 320/375px layouts, and local-only processing.");
+  console.log("Browser smoke passed: existing document workflow, English PDF download from Bangla UI, ordered pages and footers, loading/error recovery, object URL cleanup, responsive layouts, and local-only processing.");
 }).catch((error) => {
   console.error(error);
   process.exitCode = 1;

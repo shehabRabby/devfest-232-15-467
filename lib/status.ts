@@ -18,7 +18,7 @@ export function isBlockingStatus(status: DocumentStatus): boolean {
   return status === "MISSING" || status === "EXPIRY_NEEDED" || status === "EXPIRED";
 }
 
-/** Readiness only; package generation is intentionally deferred to a later stage. */
+/** A single readiness gate shared by the interface and PDF generator. */
 export function canGeneratePackage(
   data: TenderData | null,
   files: readonly UploadedPdf[],

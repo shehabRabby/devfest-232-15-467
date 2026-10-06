@@ -3,6 +3,7 @@
 import { useReducer, useRef, useState } from "react";
 import { formatFileSize, formatNumber, formatValidationError, translations } from "@/lib/i18n";
 import { MAX_PDF_FILES, MAX_TOTAL_BYTES, uploadPdfFiles } from "@/lib/pdf";
+import { downloadPackagePdf, generatePackagePdf, PackagePdfError, type GenerationFeedback, type PackageProgress } from "@/lib/package-pdf";
 import { parseRequirementsJson } from "@/lib/requirements";
 import { getReadinessSummary } from "@/lib/status";
 import type { Language, ValidationError } from "@/lib/types";
@@ -23,7 +24,9 @@ export function TenderBuilder() {
   const [state, dispatch] = useReducer(workspaceReducer, initialWorkspace);
   const [jsonError, setJsonError] = useState<JsonLoadError | null>(null);
   const [jsonFilename, setJsonFilename] = useState("");
-  const [busy, setBusy] = useState<"json" | "pdf" | null>(null);
+  const [busy, setBusy] = useState<"json" | "pdf" | "package" | null>(null);
+  const [generationFeedback, setGenerationFeedback] = useState<GenerationFeedback | null>(null);
+  const [packageProgress, setPackageProgress] = useState<PackageProgress | null>(null);
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const processing = useRef(false);
   const t = translations[language];
@@ -52,6 +55,7 @@ export function TenderBuilder() {
         return;
       }
       dispatch({ type: "load-tender", data: result.value });
+      setGenerationFeedback(null);
       setJsonFilename(file.name);
     } catch {
       setJsonError({ type: "file", code: "jsonReadFailed" });
@@ -69,6 +73,25 @@ export function TenderBuilder() {
     try {
       const result = await uploadPdfFiles(files, state.files, (completed, total) => setProgress({ completed, total }));
       dispatch({ type: "add-files", files: result.files, errors: result.errors });
+    } finally {
+      processing.current = false;
+      setBusy(null);
+    }
+  }
+
+  async function generatePackage() {
+    if (processing.current || !summary.canGenerate) return;
+    processing.current = true;
+    setBusy("package");
+    setGenerationFeedback(null);
+    setPackageProgress(null);
+    try {
+      const result = await generatePackagePdf(state.data, state.files, state.matches, state.expiryDates, setPackageProgress);
+      downloadPackagePdf(result);
+      setGenerationFeedback({ type: "success", filename: result.filename });
+    } catch (error: unknown) {
+      const failure = error instanceof PackagePdfError ? error : new PackagePdfError("GENERATION_FAILED");
+      setGenerationFeedback({ type: "error", code: failure.code, filename: failure.filename });
     } finally {
       processing.current = false;
       setBusy(null);
@@ -138,7 +161,7 @@ export function TenderBuilder() {
               {state.uploadErrors.length > 0 && <div role="alert" className="error-box mt-4"><div className="flex items-start justify-between gap-3"><p className="font-semibold">{t.fileErrors}</p><button type="button" aria-label={t.dismiss} onClick={() => dispatch({ type: "dismiss-upload-errors" })} className="rounded p-0.5"><Icon name="close" className="h-4 w-4" /></button></div><ul className="mt-2 space-y-2">{state.uploadErrors.map((error, index) => <li key={`${error.filename}-${index}`}><span className="break-all font-medium">{error.filename}</span><p className="mt-0.5">{t.pdfErrors[error.code]}</p></li>)}</ul></div>}
             </section>
 
-            <PackageReadiness summary={summary} hasTender={state.data !== null} disabled={disabled} language={language} t={t} />
+            <PackageReadiness summary={summary} hasTender={state.data !== null} disabled={disabled} generating={busy === "package"} progress={packageProgress} feedback={generationFeedback} onGenerate={() => { void generatePackage(); }} language={language} t={t} />
 
             <section className="panel overflow-hidden" aria-labelledby="files-heading">
               <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4 sm:px-6"><h2 id="files-heading" className="text-sm font-semibold text-slate-900">{t.uploadedFiles}</h2><span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">{formatNumber(state.files.length, language)}</span></div>

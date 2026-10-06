@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import { formatNumber, type TranslationDictionary } from "@/lib/i18n";
+import type { GenerationFeedback, PackageProgress } from "@/lib/package-pdf";
 import { isBlockingStatus } from "@/lib/status";
 import type { DocumentStatus, Language, ReadinessSummary } from "@/lib/types";
 import { Icon } from "./icon";
@@ -10,12 +10,15 @@ interface PackageReadinessProps {
   summary: ReadinessSummary;
   hasTender: boolean;
   disabled: boolean;
+  generating: boolean;
+  progress: PackageProgress | null;
+  feedback: GenerationFeedback | null;
+  onGenerate: () => void;
   language: Language;
   t: TranslationDictionary;
 }
 
-export function PackageReadiness({ summary, hasTender, disabled, language, t }: PackageReadinessProps) {
-  const [acknowledged, setAcknowledged] = useState(false);
+export function PackageReadiness({ summary, hasTender, disabled, generating, progress, feedback, onGenerate, language, t }: PackageReadinessProps) {
   const ready = summary.canGenerate;
   const message = ready ? t.readyHint
     : !hasTender ? t.startHint
@@ -56,10 +59,20 @@ export function PackageReadiness({ summary, hasTender, disabled, language, t }: 
           ))}
         </ul>
       )}
-      <button id="generate-package" type="button" disabled={!ready || disabled} aria-describedby="readiness-message export-notice" onClick={() => setAcknowledged(true)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-emerald-800 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">
-        <Icon name="document" className="h-4 w-4 shrink-0" />{t.generatePackage}
+      <button id="generate-package" type="button" disabled={!ready || disabled} aria-busy={generating} aria-describedby="readiness-message export-notice" onClick={onGenerate} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-emerald-800 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">
+        <Icon name="document" className="h-4 w-4 shrink-0" />{generating ? t.generatingPackage : t.generatePackage}
       </button>
-      <p id="export-notice" role={acknowledged && ready ? "status" : undefined} className="mt-2 text-center text-xs leading-relaxed text-slate-500">{acknowledged && ready ? t.generationAcknowledged : t.generationPending}</p>
+      <p id="export-notice" className="mt-2 text-center text-xs leading-relaxed text-slate-500">{t.generationHint}</p>
+      {generating && progress && <div role="status" className="mt-3 text-xs leading-relaxed text-emerald-800">
+        <p>{t.generationStages[progress.stage]} · {formatNumber(progress.completed, language)} / {formatNumber(progress.total, language)}</p>
+        <progress className="mt-2 h-1.5 w-full accent-emerald-700" max={progress.total || 1} value={progress.completed} aria-label={t.generatingPackage} />
+      </div>}
+      {!generating && feedback?.type === "success" && <p role="status" className="mt-3 break-all text-xs leading-relaxed text-emerald-800">{t.packageDownloaded.replace("{filename}", () => feedback.filename)}</p>}
+      {!generating && feedback?.type === "error" && <div role="alert" className="error-box mt-3">
+        <p className="font-semibold">{t.packageGenerationError}</p>
+        {feedback.filename && <p className="mt-1 break-all font-medium">{feedback.filename}</p>}
+        <p className="mt-1">{t.packageErrors[feedback.code]}</p>
+      </div>}
     </section>
   );
 }
