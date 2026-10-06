@@ -35,20 +35,20 @@ export function PackageReadiness({ summary, hasTender, disabled, generating, pro
   const blockingStatuses = (Object.keys(summary.statusCounts) as DocumentStatus[]).filter(isBlockingStatus);
 
   return (
-    <section className="panel p-4 sm:p-5" aria-labelledby="readiness-heading">
-      <h2 id="readiness-heading" className="text-sm font-semibold text-slate-900">{t.packageReadiness}</h2>
-      <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4">
+    <section className="panel p-4 sm:p-6" aria-labelledby="readiness-heading">
+      <h2 id="readiness-heading" className="text-base font-semibold text-slate-900">{t.packageReadiness}</h2>
+      <dl className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-2">
         {counts.map(({ id, value, label }) => (
-          <div key={id} className="min-w-0 rounded-lg bg-slate-50 px-2.5 py-3">
-            <dt className="min-h-8 break-words text-xs leading-4 text-slate-500">{label}</dt>
-            <dd id={`readiness-${id}`} className={`mt-1 text-xl font-semibold tabular-nums ${id === "blocking" && value > 0 ? "text-red-700" : id === "ok" && value > 0 ? "text-emerald-700" : "text-slate-800"}`}>{formatNumber(value, language)}</dd>
+          <div key={id} className={`min-w-0 rounded-xl border px-3 py-3 ${id === "blocking" && value > 0 ? "border-red-200 bg-red-50" : id === "ok" ? "border-emerald-200 bg-emerald-50/70" : "border-slate-200 bg-slate-50"}`}>
+            <dt className={`min-h-8 break-words text-xs font-medium leading-relaxed ${id === "blocking" && value > 0 ? "text-red-800" : id === "ok" ? "text-emerald-800" : "text-slate-600"}`}>{label}</dt>
+            <dd id={`readiness-${id}`} className={`mt-1 text-2xl font-semibold tabular-nums ${id === "blocking" && value > 0 ? "text-red-700" : id === "ok" && value > 0 ? "text-emerald-700" : "text-slate-800"}`}>{formatNumber(value, language)}</dd>
           </div>
         ))}
       </dl>
-      <div role="status" className={`mt-4 flex gap-2.5 rounded-lg p-3 ${ready ? "bg-emerald-50 text-emerald-900" : "bg-slate-50 text-slate-700"}`}>
+      <div role="status" className={`mt-4 flex gap-2.5 rounded-xl border p-3 ${ready ? "border-emerald-200 bg-emerald-50 text-emerald-900" : summary.blocking > 0 ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
         <Icon name={ready ? "check" : hasTender ? "alert" : "document"} className="mt-0.5 h-4 w-4 shrink-0" />
         <div className="min-w-0">
-          {hasTender && <p className="text-sm font-medium">{ready ? t.ready : t.review}</p>}
+          {hasTender && <p className="text-sm font-semibold">{ready ? t.ready : t.review}</p>}
           <p id="readiness-message" className="mt-0.5 text-xs leading-relaxed">{message}</p>
         </div>
       </div>
@@ -59,7 +59,7 @@ export function PackageReadiness({ summary, hasTender, disabled, generating, pro
           ))}
         </ul>
       )}
-      <button id="generate-package" type="button" disabled={!ready || disabled} aria-busy={generating} aria-describedby="readiness-message export-notice" onClick={onGenerate} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-emerald-800 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">
+      <button id="generate-package" type="button" disabled={!ready || disabled} aria-busy={generating} aria-describedby="readiness-message export-notice" onClick={onGenerate} className="mt-5 flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-cyan-900 px-3 py-3 text-sm font-semibold text-white shadow-sm transition-colors duration-200 enabled:hover:bg-cyan-950 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500 disabled:shadow-none">
         <Icon name="document" className="h-4 w-4 shrink-0" />{generating ? t.generatingPackage : t.generatePackage}
       </button>
       <p id="export-notice" className="mt-2 text-center text-xs leading-relaxed text-slate-500">{t.generationHint}</p>

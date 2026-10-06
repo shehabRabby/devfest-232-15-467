@@ -1,6 +1,9 @@
 import type { Language, ValidationError } from "./types";
 
 const en = {
+  appTitle: "Tender Document Package Builder",
+  appSubtitle: "Prepare, validate and generate submission-ready tender packages.",
+  companyLogoAlt: "Meghna Tech Solutions logo",
   product: "TenderPack",
   productSubtitle: "Document package builder",
   workspace: "Document workspace",
@@ -140,6 +143,9 @@ const en = {
 export type TranslationDictionary = typeof en;
 
 const bn: TranslationDictionary = {
+  appTitle: "দরপত্রের নথি প্যাকেজ প্রস্তুতকারক",
+  appSubtitle: "দরপত্রের নথি প্রস্তুত, যাচাই ও জমা দেওয়ার উপযোগী প্যাকেজ তৈরি করুন।",
+  companyLogoAlt: "মেঘনা টেক সলিউশনসের লোগো",
   product: "টেন্ডারপ্যাক",
   productSubtitle: "দরপত্রের নথি প্রস্তুত করুন",
   workspace: "নথির কর্মক্ষেত্র",
