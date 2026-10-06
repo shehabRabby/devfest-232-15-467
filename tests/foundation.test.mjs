@@ -18,9 +18,10 @@ loadModule.extensions[".ts"] = (module, filename) => {
 };
 
 const { parseRequirementsJson, validateTenderData, sortRequirements } = loadModule("../lib/requirements.ts");
-const { getRequirementStatus, isBlockingStatus, canGeneratePackage } = loadModule("../lib/status.ts");
+const { getRequirementStatus, isBlockingStatus, canGeneratePackage, getReadinessSummary } = loadModule("../lib/status.ts");
 const { isValidIsoDate, compareIsoDates } = loadModule("../lib/dates.ts");
-const { assignDocument, hasValidMatches, getDuplicateFileIds } = loadModule("../lib/matching.ts");
+const { assignDocument, hasValidMatches, getDuplicateFileIds, getFileAssignment } = loadModule("../lib/matching.ts");
+const { formatValidationError, translations } = loadModule("../lib/i18n.ts");
 const { sha256 } = loadModule("../lib/hash.ts");
 const { loadPdfFile, uploadPdfFiles, MAX_PDF_FILES, MAX_TOTAL_BYTES } = loadModule("../lib/pdf.ts");
 const { initialWorkspace, workspaceReducer } = loadModule("../lib/workspace.ts");
@@ -112,6 +113,94 @@ test("file replacement/removal clears expiry; loading a new tender resets matche
   assert.deepEqual(reloaded.expiryDates, {});
   assert.equal(reloaded.files.length, 2);
   assert.equal(state.files.length, 2);
+});
+
+test("unmatching releases the exact file and every identical copy, and clears its expiry date", () => {
+  const state = { ...initialWorkspace, data: { tender, requirements: [requirement, otherRequirement] }, files: [pdf, duplicate, otherPdf], matches: { req: pdf.id }, expiryDates: { req: deadline } };
+  assert.deepEqual(getFileAssignment(pdf, state.matches, state.files, "other"), { requirementId: "req", isDuplicate: false });
+  assert.deepEqual(getFileAssignment(duplicate, state.matches, state.files, "other"), { requirementId: "req", isDuplicate: true });
+  assert.equal(getFileAssignment(duplicate, state.matches, state.files, "req"), null);
+  const unmatched = workspaceReducer(state, { type: "match", requirementId: "req", fileId: "" });
+  assert.deepEqual(unmatched.expiryDates, {});
+  assert.equal(getFileAssignment(pdf, unmatched.matches, unmatched.files), null);
+  assert.equal(getFileAssignment(duplicate, unmatched.matches, unmatched.files), null);
+  const reassigned = workspaceReducer(unmatched, { type: "match", requirementId: "other", fileId: duplicate.id });
+  assert.deepEqual(reassigned.matches, { other: duplicate.id });
+  assert.equal(getRequirementStatus(otherRequirement, duplicate, reassigned.expiryDates.other, deadline), "EXPIRY_NEEDED");
+});
+
+test("conflicting assignment preserves the old match and its expiry data", () => {
+  const state = { ...initialWorkspace, data: { tender, requirements: [requirement, otherRequirement] }, files: [pdf, duplicate, otherPdf], matches: { req: pdf.id, other: otherPdf.id }, expiryDates: { req: deadline, other: "2026-10-21" } };
+  for (const fileId of [pdf.id, duplicate.id]) {
+    const rejected = workspaceReducer(state, { type: "match", requirementId: "other", fileId });
+    assert.deepEqual(rejected.matches, state.matches);
+    assert.deepEqual(rejected.expiryDates, state.expiryDates);
+    assert.ok(rejected.matchingError);
+  }
+});
+
+test("removing one uploaded file clears only its own assignment and expiry", () => {
+  const state = { ...initialWorkspace, data: { tender, requirements: [requirement, otherRequirement] }, files: [pdf, duplicate, otherPdf], matches: { req: pdf.id, other: otherPdf.id }, expiryDates: { req: deadline, other: "2026-10-21" } };
+  const removed = workspaceReducer(state, { type: "remove-file", fileId: pdf.id });
+  assert.deepEqual(removed.matches, { other: otherPdf.id });
+  assert.deepEqual(removed.expiryDates, { other: "2026-10-21" });
+  assert.equal(getFileAssignment(duplicate, removed.matches, removed.files), null);
+});
+
+test("readiness counts track live statuses and optional matched expiry can block generation", () => {
+  const optional = { ...otherRequirement, id: "optional", mandatory: false, has_expiry: false };
+  const optionalExpiry = { ...optional, id: "optional-expiry", has_expiry: true };
+  const mandatory = { ...otherRequirement, has_expiry: false };
+  const data = { tender, requirements: [requirement, mandatory, optional, optionalExpiry] };
+  const spare = { ...pdf, id: "spare", sha256: "spare-content" };
+  const files = [pdf, otherPdf, spare];
+  const initial = getReadinessSummary(data, files, {}, {});
+  assert.deepEqual([initial.total, initial.ok, initial.blocking, initial.notProvided, initial.canGenerate], [4, 0, 2, 2, false]);
+  const matches = { req: pdf.id, other: otherPdf.id };
+  const expiry = { req: deadline };
+  const ready = getReadinessSummary(data, files, matches, expiry);
+  assert.deepEqual([ready.ok, ready.blocking, ready.notProvided, ready.canGenerate], [2, 0, 2, true]);
+  const optionalMatched = { ...matches, "optional-expiry": spare.id };
+  const missingDate = getReadinessSummary(data, files, optionalMatched, expiry);
+  assert.equal(missingDate.statusCounts.EXPIRY_NEEDED, 1);
+  assert.equal(missingDate.blocking, 1);
+  assert.equal(missingDate.canGenerate, false);
+  const expired = getReadinessSummary(data, files, optionalMatched, { ...expiry, "optional-expiry": "2026-10-19" });
+  assert.equal(expired.statusCounts.EXPIRED, 1);
+  assert.equal(expired.canGenerate, false);
+  for (const date of [deadline, "2026-10-21"]) {
+    const valid = getReadinessSummary(data, files, optionalMatched, { ...expiry, "optional-expiry": date });
+    assert.deepEqual([valid.ok, valid.blocking, valid.notProvided, valid.canGenerate], [3, 0, 1, true]);
+  }
+  assert.equal(getReadinessSummary(null, files, {}, {}).canGenerate, false);
+  assert.equal(getReadinessSummary({ tender, requirements: [] }, files, {}, {}).canGenerate, false);
+});
+
+test("the sample tender initially has eight Missing and two non-blocking Not provided statuses", () => {
+  const data = parseRequirementsJson(readFileSync(new URL("../requirements.json", import.meta.url), "utf8"));
+  assert.equal(data.ok, true);
+  const summary = getReadinessSummary(data.value, [], {}, {});
+  assert.deepEqual([summary.total, summary.ok, summary.blocking, summary.notProvided], [10, 0, 8, 2]);
+  assert.equal(summary.statusCounts.MISSING, 8);
+  assert.equal(summary.canGenerate, false);
+});
+
+test("validation errors retain schema details and can be rendered in either language", () => {
+  const result = validateTenderData({ tender, requirements: [{ ...requirement, order: "1" }] });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "INVALID_ORDER");
+  assert.equal(formatValidationError(result, "en"), result.error);
+  assert.match(formatValidationError(result, "bn"), /requirements\[0\]\.order/);
+  assert.match(formatValidationError(result, "bn"), /সংখ্যা/);
+  const malformed = parseRequirementsJson("{bad}");
+  assert.equal(formatValidationError(malformed, "en"), malformed.error);
+  assert.match(formatValidationError(malformed, "bn"), /সঠিক নয়/);
+  for (const status of ["MISSING", "EXPIRY_NEEDED", "EXPIRED", "NOT_PROVIDED", "OK"]) {
+    assert.ok(translations.en.statuses[status]);
+    assert.ok(translations.bn.statuses[status]);
+    assert.ok(translations.en.statusHints[status]);
+    assert.ok(translations.bn.statusHints[status]);
+  }
 });
 
 async function makePdf(name = "valid.pdf", pages = 2) {

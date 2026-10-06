@@ -74,6 +74,7 @@ async function contains(text) {
   return evaluate(`document.body.innerText.includes(${JSON.stringify(text)})`);
 }
 
+async function runSmoke() {
 try {
   await app.prepare();
   server = createServer(app.getRequestHandler());
@@ -109,6 +110,7 @@ try {
   await command("Network.enable");
   await command("Page.navigate", { url: origin });
   await waitFor(() => contains("Your checklist starts here"), "initial empty state");
+  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
   await evaluate("[...document.querySelectorAll('button')].find(button => button.textContent === 'বাংলা').click()");
   await waitFor(() => contains("নথির কর্মক্ষেত্র"), "React hydration and Bangla toggle");
   await evaluate("[...document.querySelectorAll('button')].find(button => button.textContent === 'EN').click()");
@@ -117,6 +119,9 @@ try {
   writeFileSync(invalidJson, "{invalid");
   await upload("#json-upload", [invalidJson]);
   await waitFor(() => contains("malformed JSON"), "malformed JSON error");
+  await evaluate("[...document.querySelectorAll('button')].find(button => button.textContent === 'বাংলা').click()");
+  await waitFor(() => contains("এই ফাইলের JSON বিন্যাস সঠিক নয়"), "validation error follows language switch");
+  await evaluate("[...document.querySelectorAll('button')].find(button => button.textContent === 'EN').click()");
 
   const json = join(temporary, "unseen.json");
   writeFileSync(json, JSON.stringify({
@@ -125,12 +130,16 @@ try {
       { id: "optional", order: 3, title_en: "Optional document", title_bn: "ঐচ্ছিক নথি", mandatory: false, has_expiry: false },
       { id: "required", order: 2, title_en: "Required document", title_bn: "আবশ্যক নথি", mandatory: true, has_expiry: false },
       { id: "expiry", order: 1, title_en: "Expiring document", title_bn: "মেয়াদের নথি", mandatory: true, has_expiry: true },
+      { id: "optional-expiry", order: 4, title_en: "Optional expiring document", title_bn: "মেয়াদযুক্ত ঐচ্ছিক নথি", mandatory: false, has_expiry: true },
     ],
   }));
   await upload("#json-upload", [json]);
   await waitFor(() => contains("UNSEEN-TEST"), "valid unseen JSON");
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('ol > li h3')].map(item => item.textContent)"), ["Expiring document", "Required document", "Optional document"]);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('ol > li h3')].map(item => item.textContent)"), ["Expiring document", "Required document", "Optional document", "Optional expiring document"]);
   assert.equal(await contains("Not provided"), true);
+  assert.deepEqual(await evaluate("['total', 'ok', 'blocking', 'not-provided'].map(key => document.querySelector('#readiness-' + key).textContent)"), ["4", "0", "2", "2"]);
+  assert.equal(await contains("Resolve 2 blocking issues"), true);
+  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
 
   const corrupt = join(temporary, "damaged.pdf");
   writeFileSync(corrupt, "%PDF-1.7\ncorrupt");
@@ -141,36 +150,100 @@ try {
   assert.equal(await contains("damaged or unreadable"), true);
 
   await choose("#requirement-0", "trade_license_2026.pdf");
-  await waitFor(() => contains("Expiry needed"), "expiry needed state");
+  await waitFor(() => contains("Expiry date needed"), "expiry needed state");
+  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
   await date("2026-10-19");
   await waitFor(() => contains("Expired"), "expiry before deadline");
   await date("2026-10-20");
+  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true, "unmatched mandatory document still blocks");
   await choose("#requirement-1", "experience_cert.pdf");
   await waitFor(() => contains("Requirements complete"), "expiry exactly on deadline and optional unmatched readiness");
+  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), false);
+  assert.deepEqual(await evaluate("['total', 'ok', 'blocking', 'not-provided'].map(key => document.querySelector('#readiness-' + key).textContent)"), ["4", "2", "0", "2"]);
+  await date("2026-10-21");
+  await waitFor(() => contains("All required documents are ready"), "expiry after deadline remains ready");
   assert.equal(await evaluate("[...document.querySelector('#requirement-2').options].find(item => item.textContent.includes('experience_cert (1).pdf')).disabled"), true);
+  assert.equal(await evaluate("[...document.querySelector('#requirement-2').options].find(item => item.textContent.startsWith('experience_cert.pdf')).disabled"), true, "same file disabled in another row");
+  assert.equal(await contains("Only one copy can be assigned"), true);
 
-  await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
-  assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, "mobile layout overflow");
+  await evaluate("document.querySelector('[aria-label=\"Remove match: Required document\"]').click()");
+  await waitFor(() => evaluate("document.querySelector('#generate-package').disabled"), "unmatching immediately blocks generation");
+  assert.equal(await evaluate("[...document.querySelector('#requirement-2').options].find(item => item.textContent === 'experience_cert (1).pdf').disabled"), false);
+  await choose("#requirement-2", "experience_cert (1).pdf");
+  await evaluate("document.querySelector('[aria-label=\"Remove match: Optional document\"]').click()");
+  await waitFor(() => evaluate("document.querySelector('#requirement-2').value === ''"), "explicit optional unmatch");
+  await choose("#requirement-1", "experience_cert.pdf");
+  await waitFor(() => evaluate("!document.querySelector('#generate-package').disabled"), "freed hash can be reassigned");
+
+  await choose("#requirement-0", "03_tin_certificate.pdf");
+  await waitFor(() => contains("Expiry date needed"), "changing the match resets expiry");
+  assert.equal(await evaluate("document.querySelector('input[type=date]').value"), "");
+  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
+  await date("2026-10-20");
+  await choose("#requirement-0", "trade_license_2026.pdf");
+  await waitFor(() => evaluate("document.querySelector('input[type=date]').value === ''"), "second replacement also resets expiry");
+  await date("2026-10-20");
+  await waitFor(() => evaluate("!document.querySelector('#generate-package').disabled"), "mandatory issues resolved again");
+
+  await choose("#requirement-3", "03_tin_certificate.pdf");
+  await waitFor(() => evaluate("document.querySelector('#generate-package').disabled"), "matched optional document with missing expiry blocks");
+  assert.equal(await contains("Resolve 1 blocking issue"), true);
+  await evaluate("document.querySelector('[aria-label=\"Remove match: Optional expiring document\"]').click()");
+  await waitFor(() => evaluate("!document.querySelector('#generate-package').disabled"), "unmatched optional expiry document is non-blocking");
+  assert.equal(await evaluate("document.querySelectorAll('input[type=date]').length"), 1);
+  await evaluate("document.querySelector('#generate-package').click()");
+  await waitFor(() => contains("Your document checks are complete"), "readiness-only generation placeholder");
+
+  for (const language of ["en", "bn"]) {
+    await evaluate(`document.querySelector('button[lang="${language}"]').click()`);
+    await waitFor(() => evaluate(`document.querySelector('div[lang="${language}"]') !== null`), "language update");
+    if (language === "bn") {
+      assert.equal(await contains("মেয়াদের নথি"), true);
+      assert.equal(await contains("সব আবশ্যক নথি প্রস্তুত"), true);
+      assert.equal(await evaluate("document.querySelector('#readiness-ok').textContent"), "২");
+      assert.equal(await contains("Test bidder"), true, "tender-provided names remain unchanged");
+    }
+    for (const width of [320, 375, 1280]) {
+      await command("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: false });
+      assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, `${language} layout overflow at ${width}px`);
+      assert.equal(await evaluate("[...document.querySelectorAll('select, input[type=date]')].every(input => input.getBoundingClientRect().width > 120 && input.getBoundingClientRect().height >= 40)"), true, `${language} controls unusable at ${width}px`);
+    }
+  }
+  await evaluate("document.querySelector('button[lang=en]').click()");
+  await waitFor(() => contains("All required documents are ready"), "English restored");
+
   await evaluate("document.querySelector('[aria-label=\"Remove: trade_license_2026.pdf\"]').click()");
   await waitFor(async () => !(await evaluate("Boolean(document.querySelector('input[type=date]'))")), "removal clears assignment and expiry input");
   assert.equal(await contains("Missing"), true);
+  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
   await evaluate("document.querySelector('[aria-label=\"Remove: experience_cert (1).pdf\"]').click()");
   await waitFor(async () => (await evaluate("[...document.querySelectorAll('span')].filter(item => item.textContent === 'Duplicate').length")) === 0, "duplicate indicator clears");
   assert.deepEqual(exceptions, [], "browser runtime errors");
   assert.equal(requests.every((url) => url.startsWith(origin) || url.startsWith("data:")), true, "document workflow sent an external request");
-  console.log("Browser smoke passed: JSON, PDFs, duplicates, matching, expiry boundaries, removal, Bangla, mobile layout, and local-only processing.");
 } finally {
+  const browserExited = browser && browser.exitCode === null ? once(browser, "exit").then(() => true) : Promise.resolve(true);
   if (socket?.readyState === WebSocket.OPEN) {
     try { await command("Browser.close"); } catch { /* Browser may close before responding. */ }
     socket.close();
   }
   if (browser && browser.exitCode === null) {
-    const exit = once(browser, "exit");
-    browser.kill();
-    await Promise.race([exit, new Promise((done) => setTimeout(done, 2000))]);
+    // Let Chrome release its profile before terminating the owned process.
+    const exited = await Promise.race([browserExited, new Promise((done) => setTimeout(() => done(false), 5000).unref())]);
+    if (!exited) {
+      browser.kill();
+      await Promise.race([browserExited, new Promise((done) => setTimeout(done, 2000).unref())]);
+    }
   }
   if (server) { server.closeAllConnections(); await new Promise((done) => server.close(done)); }
   await app.close();
   if (!resolve(temporary).startsWith(temporaryRoot + sep)) throw new Error("Unsafe temporary cleanup path");
-  rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  rmSync(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
 }
+}
+
+await runSmoke().then(() => {
+  console.log("Browser smoke passed: Stage 1 uploads plus matching, unmatching, reassignment, duplicate restrictions, expiry boundaries, readiness button/counts, bilingual validation, 320/375px layouts, and local-only processing.");
+}).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

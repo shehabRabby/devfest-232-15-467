@@ -15,37 +15,37 @@ export function sortRequirements(requirements: readonly TenderRequirement[]): Te
 
 export function validateTenderData(input: unknown): ValidationResult<TenderData> {
   if (!isRecord(input) || !isRecord(input.tender) || !Array.isArray(input.requirements)) {
-    return { ok: false, error: "Expected an object containing tender details and a requirements array." };
+    return { ok: false, code: "INVALID_STRUCTURE", error: "Expected an object containing tender details and a requirements array." };
   }
   const tender = input.tender;
   for (const key of ["tender_id", "title", "procuring_entity", "bidder", "submission_deadline"]) {
     if (!isNonEmptyString(tender[key])) {
-      return { ok: false, error: `tender.${key} must be a non-empty string.` };
+      return { ok: false, code: "REQUIRED_STRING", path: `tender.${key}`, error: `tender.${key} must be a non-empty string.` };
     }
   }
   const deadline = String(tender.submission_deadline);
   if (!isValidIsoDate(deadline)) {
-    return { ok: false, error: "tender.submission_deadline must be a valid date in YYYY-MM-DD format." };
+    return { ok: false, code: "INVALID_DEADLINE", error: "tender.submission_deadline must be a valid date in YYYY-MM-DD format." };
   }
 
   const requirements: TenderRequirement[] = [];
   const seenIds = new Set<string>();
   for (const [index, item] of input.requirements.entries()) {
     const path = `requirements[${index}]`;
-    if (!isRecord(item)) return { ok: false, error: `${path} must be an object.` };
+    if (!isRecord(item)) return { ok: false, code: "INVALID_REQUIREMENT", path, error: `${path} must be an object.` };
     for (const key of ["id", "title_en", "title_bn"]) {
       if (!isNonEmptyString(item[key])) {
-        return { ok: false, error: `${path}.${key} must be a non-empty string.` };
+        return { ok: false, code: "REQUIRED_STRING", path: `${path}.${key}`, error: `${path}.${key} must be a non-empty string.` };
       }
     }
     if (typeof item.order !== "number" || !Number.isFinite(item.order)) {
-      return { ok: false, error: `${path}.order must be a finite number.` };
+      return { ok: false, code: "INVALID_ORDER", path, error: `${path}.order must be a finite number.` };
     }
     if (typeof item.mandatory !== "boolean" || typeof item.has_expiry !== "boolean") {
-      return { ok: false, error: `${path}.mandatory and has_expiry must be booleans.` };
+      return { ok: false, code: "INVALID_FLAGS", path, error: `${path}.mandatory and has_expiry must be booleans.` };
     }
     const id = String(item.id).trim();
-    if (seenIds.has(id)) return { ok: false, error: `Requirement ID "${id}" appears more than once.` };
+    if (seenIds.has(id)) return { ok: false, code: "DUPLICATE_ID", requirementId: id, error: `Requirement ID "${id}" appears more than once.` };
     seenIds.add(id);
     requirements.push({
       id,
@@ -76,7 +76,7 @@ export function parseRequirementsJson(text: string): ValidationResult<TenderData
   try {
     input = JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch {
-    return { ok: false, error: "This file contains malformed JSON. Check its syntax and try again." };
+    return { ok: false, code: "MALFORMED_JSON", error: "This file contains malformed JSON. Check its syntax and try again." };
   }
   return validateTenderData(input);
 }

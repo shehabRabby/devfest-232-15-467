@@ -1,4 +1,21 @@
-import type { DocumentMatches, MatchingResult, TenderRequirement, UploadedPdf } from "./types";
+import type { DocumentMatches, FileAssignment, MatchingResult, TenderRequirement, UploadedPdf } from "./types";
+
+/** Find the owner of a file's contents, optionally excluding the row being edited. */
+export function getFileAssignment(
+  file: UploadedPdf,
+  matches: DocumentMatches,
+  files: readonly UploadedPdf[],
+  exceptRequirementId?: string,
+): FileAssignment | null {
+  for (const [requirementId, matchedId] of Object.entries(matches)) {
+    if (requirementId === exceptRequirementId) continue;
+    const matchedFile = files.find((candidate) => candidate.id === matchedId);
+    if (matchedId === file.id || matchedFile?.sha256 === file.sha256) {
+      return { requirementId, isDuplicate: matchedId !== file.id };
+    }
+  }
+  return null;
+}
 
 export function getDuplicateFileIds(files: readonly UploadedPdf[]): ReadonlySet<string> {
   const counts = new Map<string, number>();

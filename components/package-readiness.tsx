@@ -1,0 +1,65 @@
+"use client";
+
+import { useState } from "react";
+import { formatNumber, type TranslationDictionary } from "@/lib/i18n";
+import { isBlockingStatus } from "@/lib/status";
+import type { DocumentStatus, Language, ReadinessSummary } from "@/lib/types";
+import { Icon } from "./icon";
+
+interface PackageReadinessProps {
+  summary: ReadinessSummary;
+  hasTender: boolean;
+  disabled: boolean;
+  language: Language;
+  t: TranslationDictionary;
+}
+
+export function PackageReadiness({ summary, hasTender, disabled, language, t }: PackageReadinessProps) {
+  const [acknowledged, setAcknowledged] = useState(false);
+  const ready = summary.canGenerate;
+  const message = ready ? t.readyHint
+    : !hasTender ? t.startHint
+    : summary.total === 0 ? t.noRequirements
+    : summary.blocking > 0
+      ? (summary.blocking === 1 ? t.blockingHintSingle : t.blockingHint).replace("{count}", formatNumber(summary.blocking, language))
+      : t.assignmentReview;
+  const counts = [
+    { id: "total", value: summary.total, label: t.requirements },
+    { id: "ok", value: summary.ok, label: t.okCount },
+    { id: "blocking", value: summary.blocking, label: t.blocking },
+    { id: "not-provided", value: summary.notProvided, label: t.notProvidedCount },
+  ];
+  const blockingStatuses = (Object.keys(summary.statusCounts) as DocumentStatus[]).filter(isBlockingStatus);
+
+  return (
+    <section className="panel p-4 sm:p-5" aria-labelledby="readiness-heading">
+      <h2 id="readiness-heading" className="text-sm font-semibold text-slate-900">{t.packageReadiness}</h2>
+      <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4">
+        {counts.map(({ id, value, label }) => (
+          <div key={id} className="min-w-0 rounded-lg bg-slate-50 px-2.5 py-3">
+            <dt className="min-h-8 break-words text-xs leading-4 text-slate-500">{label}</dt>
+            <dd id={`readiness-${id}`} className={`mt-1 text-xl font-semibold tabular-nums ${id === "blocking" && value > 0 ? "text-red-700" : id === "ok" && value > 0 ? "text-emerald-700" : "text-slate-800"}`}>{formatNumber(value, language)}</dd>
+          </div>
+        ))}
+      </dl>
+      <div role="status" className={`mt-4 flex gap-2.5 rounded-lg p-3 ${ready ? "bg-emerald-50 text-emerald-900" : "bg-slate-50 text-slate-700"}`}>
+        <Icon name={ready ? "check" : hasTender ? "alert" : "document"} className="mt-0.5 h-4 w-4 shrink-0" />
+        <div className="min-w-0">
+          {hasTender && <p className="text-sm font-medium">{ready ? t.ready : t.review}</p>}
+          <p id="readiness-message" className="mt-0.5 text-xs leading-relaxed">{message}</p>
+        </div>
+      </div>
+      {summary.blocking > 0 && (
+        <ul className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-600" aria-label={t.blocking}>
+          {blockingStatuses.filter((status) => summary.statusCounts[status] > 0).map((status) => (
+            <li key={status}>{t.statuses[status]}: <span className="font-semibold">{formatNumber(summary.statusCounts[status], language)}</span></li>
+          ))}
+        </ul>
+      )}
+      <button id="generate-package" type="button" disabled={!ready || disabled} aria-describedby="readiness-message export-notice" onClick={() => setAcknowledged(true)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-emerald-800 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">
+        <Icon name="document" className="h-4 w-4 shrink-0" />{t.generatePackage}
+      </button>
+      <p id="export-notice" role={acknowledged && ready ? "status" : undefined} className="mt-2 text-center text-xs leading-relaxed text-slate-500">{acknowledged && ready ? t.generationAcknowledged : t.generationPending}</p>
+    </section>
+  );
+}

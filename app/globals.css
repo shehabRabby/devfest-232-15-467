@@ -11,6 +11,8 @@ body {
   font-family: Arial, "Nirmala UI", "Vrinda", sans-serif;
 }
 
+[lang="bn"] { line-height: 1.6; }
+
 button, select, input { font: inherit; }
 button:not(:disabled), select:not(:disabled) { cursor: pointer; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
@@ -27,7 +29,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .file-picker { @apply relative inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-transparent bg-emerald-800 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-900 focus-within:outline-2 focus-within:outline-offset-3 focus-within:outline-emerald-700; }
   .file-picker-secondary { @apply border-slate-200 bg-white text-slate-700 hover:border-emerald-300 hover:bg-emerald-50; }
   .field-label { @apply mb-1.5 block text-xs font-medium text-slate-500; }
-  .field { @apply min-h-10 w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 disabled:cursor-default disabled:bg-slate-50 disabled:text-slate-400; }
+  .field { @apply min-h-11 w-full min-w-0 max-w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 disabled:cursor-default disabled:bg-slate-50 disabled:text-slate-400; }
   .empty-state { @apply flex flex-col items-center justify-center gap-2 px-6 py-10 text-center; }
   .empty-state h3 { @apply mt-2 text-sm font-medium text-slate-700; }
   .empty-state p { @apply max-w-72 text-xs leading-relaxed text-slate-500; }

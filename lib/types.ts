@@ -44,9 +44,40 @@ export type DocumentStatus =
 
 export type Language = "en" | "bn";
 
+export type ValidationErrorCode =
+  | "INVALID_STRUCTURE"
+  | "REQUIRED_STRING"
+  | "INVALID_DEADLINE"
+  | "INVALID_REQUIREMENT"
+  | "INVALID_ORDER"
+  | "INVALID_FLAGS"
+  | "DUPLICATE_ID"
+  | "MALFORMED_JSON";
+
+export interface ValidationError {
+  error: string;
+  code: ValidationErrorCode;
+  path?: string;
+  requirementId?: string;
+}
+
 export type ValidationResult<T> =
   | { ok: true; value: T }
-  | { ok: false; error: string };
+  | ({ ok: false } & ValidationError);
+
+export interface ReadinessSummary {
+  total: number;
+  ok: number;
+  blocking: number;
+  notProvided: number;
+  statusCounts: Readonly<Record<DocumentStatus, number>>;
+  canGenerate: boolean;
+}
+
+export interface FileAssignment {
+  requirementId: string;
+  isDuplicate: boolean;
+}
 
 export type MatchingErrorCode =
   | "UNKNOWN_REQUIREMENT"
